@@ -1,6 +1,10 @@
-# Hyperbyte Process Monitor
+# Hyperbyte TUI Process Monitor
 
 A powerful terminal-based process monitor built in Go, featuring real-time process monitoring with ASCII graphs and an intuitive interface.
+
+![Main View](docs/img/main.png)
+
+![Monitor View](docs/img/monitor.png)
 
 ## Features
 
