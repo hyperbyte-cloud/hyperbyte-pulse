@@ -198,16 +198,3 @@ The process monitor has been optimized to minimize system resource usage:
 4. Add tests if applicable
 5. Submit a pull request
 
-## License
-
-[Add your license here]
-
-## Future Enhancements
-
-- [ ] Configurable refresh intervals
-- [ ] Export metrics to file
-- [ ] Process filtering by user/group
-- [ ] System-wide resource usage graphs
-- [ ] Plugin system for custom metrics
-- [ ] Configuration file support
-- [ ] Theme customization
