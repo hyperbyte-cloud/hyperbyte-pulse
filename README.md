@@ -1,4 +1,4 @@
-# Hyperbyte TUI Process Monitor
+# Hyperbyte Pulse
 
 A powerful terminal-based process monitor built in Go, featuring real-time process monitoring with ASCII graphs and an intuitive interface.
 
