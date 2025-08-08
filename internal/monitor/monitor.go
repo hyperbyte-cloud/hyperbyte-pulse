@@ -84,9 +84,19 @@ func (m *Monitor) GetProcessMetrics(pid int32) *ProcessMetrics {
 	defer m.mu.RUnlock()
 
 	if metrics, exists := m.processMetrics[pid]; exists {
-		// Return a copy to avoid race conditions
-		copy := *metrics
-		return &copy
+		// Return a deep copy to avoid race conditions with shared slice headers
+		metricsCopy := &ProcessMetrics{
+			Timestamps:    append([]time.Time(nil), metrics.Timestamps...),
+			CPUPercent:    append([]float64(nil), metrics.CPUPercent...),
+			MemoryMB:      append([]float64(nil), metrics.MemoryMB...),
+			DiskReadRate:  append([]float64(nil), metrics.DiskReadRate...),
+			DiskWriteRate: append([]float64(nil), metrics.DiskWriteRate...),
+			DiskReadPerc:  append([]float64(nil), metrics.DiskReadPerc...),
+			DiskWritePerc: append([]float64(nil), metrics.DiskWritePerc...),
+			NetSentRate:   append([]float64(nil), metrics.NetSentRate...),
+			NetRecvRate:   append([]float64(nil), metrics.NetRecvRate...),
+		}
+		return metricsCopy
 	}
 	return nil
 }
@@ -155,6 +165,10 @@ func (m *Monitor) updateSystemMetrics() error {
 	if err != nil {
 		return err
 	}
+	var cpuValue float64
+	if len(cpuPercent) > 0 {
+		cpuValue = cpuPercent[0]
+	}
 
 	// Get memory usage
 	memStat, err := mem.VirtualMemory()
@@ -164,7 +178,7 @@ func (m *Monitor) updateSystemMetrics() error {
 
 	m.mu.Lock()
 	m.systemMetrics = SystemMetrics{
-		CPUPercent:    cpuPercent[0],
+		CPUPercent:    cpuValue,
 		MemoryPercent: memStat.UsedPercent,
 		TotalMemoryMB: float64(memStat.Total) / 1024 / 1024,
 		UsedMemoryMB:  float64(memStat.Used) / 1024 / 1024,
@@ -302,6 +316,11 @@ func (m *Monitor) getDetailedProcessInfo(proc *process.Process) (ProcessInfo, er
 
 	now := time.Now()
 
+	// Read a consistent snapshot of system I/O total under lock
+	m.mu.RLock()
+	systemIOTotal := m.systemIOTotal
+	m.mu.RUnlock()
+
 	// Get process creation time
 	if createTime, err := proc.CreateTime(); err == nil {
 		info.CreateTime = time.Unix(createTime/1000, 0)
@@ -313,7 +332,10 @@ func (m *Monitor) getDetailedProcessInfo(proc *process.Process) (ProcessInfo, er
 		info.DiskWriteKB = float64(ioCounters.WriteBytes) / 1024
 
 		// Calculate rates if we have previous data
-		if lastIO, exists := m.lastProcessIO[proc.Pid]; exists {
+		m.mu.RLock()
+		lastIO, exists := m.lastProcessIO[proc.Pid]
+		m.mu.RUnlock()
+		if exists {
 			timeDiff := now.Sub(lastIO.Timestamp).Seconds()
 			if timeDiff > 0 {
 				readDiff := float64(ioCounters.ReadBytes - lastIO.ReadBytes)
@@ -323,9 +345,9 @@ func (m *Monitor) getDetailedProcessInfo(proc *process.Process) (ProcessInfo, er
 				info.DiskWriteRate = (writeDiff / 1024) / timeDiff // KB/s
 
 				// Calculate percentage of system I/O
-				if m.systemIOTotal > 0 {
-					info.DiskReadPerc = (info.DiskReadRate / m.systemIOTotal) * 100
-					info.DiskWritePerc = (info.DiskWriteRate / m.systemIOTotal) * 100
+				if systemIOTotal > 0 {
+					info.DiskReadPerc = (info.DiskReadRate / systemIOTotal) * 100
+					info.DiskWritePerc = (info.DiskWriteRate / systemIOTotal) * 100
 				} else {
 					// Fallback: use rate relative to a reasonable baseline
 					info.DiskReadPerc = math.Min(info.DiskReadRate/1024, 100)
@@ -335,11 +357,13 @@ func (m *Monitor) getDetailedProcessInfo(proc *process.Process) (ProcessInfo, er
 		}
 
 		// Store current I/O counters for next calculation
+		m.mu.Lock()
 		m.lastProcessIO[proc.Pid] = &ProcessIOCounters{
 			ReadBytes:  ioCounters.ReadBytes,
 			WriteBytes: ioCounters.WriteBytes,
 			Timestamp:  now,
 		}
+		m.mu.Unlock()
 	}
 
 	// Network I/O - simplified implementation (removed expensive connection enumeration)
@@ -395,7 +419,10 @@ func (m *Monitor) getProcessInfo(proc *process.Process) (ProcessInfo, error) {
 		info.DiskWriteKB = float64(ioCounters.WriteBytes) / 1024
 
 		// Calculate rates if we have previous data
-		if lastIO, exists := m.lastProcessIO[proc.Pid]; exists {
+		m.mu.RLock()
+		lastIO, exists := m.lastProcessIO[proc.Pid]
+		m.mu.RUnlock()
+		if exists {
 			timeDiff := now.Sub(lastIO.Timestamp).Seconds()
 			if timeDiff > 0 {
 				readDiff := float64(ioCounters.ReadBytes - lastIO.ReadBytes)
@@ -405,9 +432,12 @@ func (m *Monitor) getProcessInfo(proc *process.Process) (ProcessInfo, error) {
 				info.DiskWriteRate = (writeDiff / 1024) / timeDiff // KB/s
 
 				// Calculate percentage of system I/O (simplified)
-				if m.systemIOTotal > 0 {
-					info.DiskReadPerc = (info.DiskReadRate / m.systemIOTotal) * 100
-					info.DiskWritePerc = (info.DiskWriteRate / m.systemIOTotal) * 100
+				m.mu.RLock()
+				systemIOTotal := m.systemIOTotal
+				m.mu.RUnlock()
+				if systemIOTotal > 0 {
+					info.DiskReadPerc = (info.DiskReadRate / systemIOTotal) * 100
+					info.DiskWritePerc = (info.DiskWriteRate / systemIOTotal) * 100
 				} else {
 					// If no system total, use absolute rate as percentage (cap at 100%)
 					info.DiskReadPerc = math.Min(info.DiskReadRate/1024, 100) // MB/s as rough percentage
@@ -417,11 +447,13 @@ func (m *Monitor) getProcessInfo(proc *process.Process) (ProcessInfo, error) {
 		}
 
 		// Store current I/O counters for next calculation
+		m.mu.Lock()
 		m.lastProcessIO[proc.Pid] = &ProcessIOCounters{
 			ReadBytes:  ioCounters.ReadBytes,
 			WriteBytes: ioCounters.WriteBytes,
 			Timestamp:  now,
 		}
+		m.mu.Unlock()
 	}
 
 	// Network I/O - simplified implementation (removed expensive connection enumeration)

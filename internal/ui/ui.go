@@ -185,7 +185,7 @@ func (ui *UI) handleMainViewKeys(event *tcell.EventKey) *tcell.EventKey {
 			ui.triggerUpdate()
 			return nil
 		}
-		ui.Stop()
+		// Ignore ESC on main view when not searching
 		return nil
 
 	case tcell.KeyEnter:
@@ -469,6 +469,12 @@ func (ui *UI) updateDetailView() {
 	}
 
 	if currentProcess != nil {
+		// Guard against empty timestamps to avoid panic when computing duration
+		monitoringDuration := "0s"
+		if len(metrics.Timestamps) > 0 {
+			monitoringDuration = fmt.Sprintf("%.0fs", time.Since(metrics.Timestamps[0]).Seconds())
+		}
+
 		info := fmt.Sprintf(`[yellow]Process Information[-]
 
 [white]PID:[-] %d
@@ -494,12 +500,17 @@ func (ui *UI) updateDetailView() {
 			currentProcess.NetSentRate,
 			currentProcess.NetRecvRate,
 			len(metrics.CPUPercent),
-			fmt.Sprintf("%.0fs", time.Since(metrics.Timestamps[0]).Seconds()),
+			monitoringDuration,
 		)
 		ui.processInfo.SetText(info)
 	}
 
 	// Update graphs
+	// Re-fetch metrics to include any updates from GetCurrentProcessData
+	metrics = ui.monitor.GetProcessMetrics(ui.selectedPID)
+	if metrics == nil || len(metrics.CPUPercent) == 0 {
+		return
+	}
 	if len(metrics.CPUPercent) > 0 {
 		// Get system metrics for memory max
 		systemMetrics := ui.monitor.GetSystemMetrics()
